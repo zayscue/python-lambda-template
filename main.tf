@@ -2,17 +2,31 @@ provider "aws" {
   region = "us-east-1"
 }
 
+resource "null_resource" "clean_up_lambda_function" {
+  triggers = {
+    build_number = "${timestamp()}"
+  }
+
+  provisioner "local-exec" {
+    command = substr(pathexpand("~"), 0, 1) == "/" ? "rm package.zip; rm -rf dist/;" : "powershell.exe -Command \"rm ./package.zip -erroraction silentlycontinue; rm ./dist -r -force -erroraction silentlycontinue;\""
+  }
+}
+
 resource "null_resource" "build_lambda_function" {
   triggers = {
     build_number = "${timestamp()}"
   }
 
   provisioner "local-exec" {
-    command = "rm package.zip; rm -rf dist/; poetry build; poetry run pip install --upgrade -t dist/lambda dist/*.whl --use-pep517 --no-cache-dir"
+    command = "poetry build; poetry run pip install --upgrade -t dist/lambda dist/*.whl --use-pep517 --no-cache-dir"
   }
+
+  depends_on = [
+    null_resource.clean_up_lambda_function
+  ]
 }
 
-data "archive_file" "lambda_function_package" {
+data "archive_file" "package_lambda_function" {
   type        = "zip"
   output_path = "${path.module}/package.zip"
   excludes = setunion(
@@ -48,11 +62,11 @@ resource "aws_iam_role" "username_generator_function_role" {
 
 
 resource "aws_lambda_function" "username_generator_function" {
-  filename         = data.archive_file.lambda_function_package.output_path
+  filename         = data.archive_file.package_lambda_function.output_path
   function_name    = "username-generator"
   role             = aws_iam_role.username_generator_function_role.arn
   handler          = "username_generator/app.lambda_handler"
-  source_code_hash = data.archive_file.lambda_function_package.output_base64sha256
+  source_code_hash = data.archive_file.package_lambda_function.output_base64sha256
   runtime          = "python3.9"
   memory_size      = 256
   timeout          = 600
